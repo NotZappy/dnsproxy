@@ -7,6 +7,7 @@ import socket
 import struct
 import time
 import logging
+import fnmatch
 
 '''
 Copyright 2013 NotZappy <NotZappy@gmail.com>
@@ -167,7 +168,7 @@ class DNSProxyHandler(BaseRequestHandler):
 		dns_message2log(req, 1)
 		if q.type_ in (DNS_TYPE_A, DNS_TYPE_AAAA) and (q.class_ == DNS_CLASS_IN):
 			for packed_ip, host in self.server.host_lines:
-				if q.name.endswith(host):
+				if fnmatch.fnmatch(q.name, host):
 					logging.info(q.name + ' matches ' + host + ', returning ' + addr_n2p(packed_ip))
 					# header, qd=1, an=1, ns=0, ar=0
 					rspdata = reqdata[:2] + '\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00'
@@ -231,27 +232,47 @@ def update_ttl(reqdata, cache_entry):
 	return str(rspbytes)
 
 def load_hosts(hosts_file):
-	logging.info('Loading hosts config, only extract config line contains wildcard domain name.')
+	logging.info('Loading hosts config.')
 	def wildcard_line(line):
-		logging.debug('Parsing hosts entry: ' + line.strip())
-		parts = line.strip().split()[:2]
-		if len(parts) < 2: return False
-		if not parts[1].startswith('*'):
-			logging.debug('No wildcard entry, ignoring.')
+		line = line.strip()
+		if line == '': return False # empty line (or only whitespaces)
+		if line.startswith('#'): return False # comment line
+		if '#' in line: line = line[:line.index('#')].strip() # inline comments
+		logging.debug('Parsing hosts entry: ' + line)
+		parts = line.strip().split()
+		if len(parts) < 2:
+			logging.warning('Invalid hosts entry: ' + line)
 			return False
+		ip = parts[0]
 		try:
-			packed_ip = addr_p2n(parts[0])
-			return packed_ip, parts[1][1:]
+			packed_ip = addr_p2n(ip)
 		except:
+			logging.warning('Invalid IP in line: ' + line)
+			return False
+		logging.debug('IP: ' + parts[0])
+		parts.pop(0)
+		hostname_errors = 0
+		for hostname in parts:
+			logging.debug('Host: ' + hostname)
+			try:
+				logging.info('Appending to hostlines: ' + str([packed_ip, hostname]))
+				hostlines.append([packed_ip, hostname])
+			except:
+				logging.warning('Appending the hostname ' + hostname + ' failed (line: ' + line + ')')
+				hostname_errors += 1
+				continue
+		if hostname_errors == 0:
+			return True
+		else:
 			return None
 
 	with open(hosts_file) as hosts_in:
 		hostlines = []
 		for line in hosts_in:
 			hostline = wildcard_line(line)
-			if hostline:
-				logging.info('Wildcard entry found, appending to hostlines: ' + addr_n2p(hostline[0]) + '; ' + hostline[1])
-				hostlines.append(hostline)
+		logging.debug('Hostlines: ' + str(len(hostlines)))
+		for line in hostlines:
+			logging.debug(line)
 		return hostlines
 
 class DNSProxyServer(ThreadingUDPServer):
